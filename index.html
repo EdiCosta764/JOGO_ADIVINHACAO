@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Torneio Estelar Pro Audio 🏆</title>
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+    <style>
+        body { font-family: sans-serif; background: #0f0c29; color: white; text-align: center; padding: 20px; }
+        .card { background: #16213e; padding: 25px; border-radius: 20px; max-width: 400px; margin: 0 auto; border: 2px solid #4834d4; box-shadow: 0 0 20px #4834d455; }
+        input, select { padding: 12px; border-radius: 8px; border: none; width: 85%; margin-bottom: 15px; font-size: 16px; text-align: center; color: #1a1a2e; outline: none; }
+        label { display: block; margin-bottom: 5px; font-size: 14px; color: #ccc; }
+        button { padding: 12px; background: #e94560; color: white; border: none; border-radius: 8px; width: 90%; font-weight: bold; cursor: pointer; font-size: 16px; margin-top: 10px; transition: 0.3s; }
+        button:hover { background: #ff4d6d; transform: scale(1.02); }
+        .estrela { color: #f1c40f; font-size: 20px; text-shadow: 0 0 5px rgba(241, 196, 15, 0.5); }
+        .vazia { color: #333; font-size: 20px; }
+        .ranking { margin-top: 20px; text-align: left; background: #1a1a2e; padding: 15px; border-radius: 12px; border: 1px solid #4834d4; }
+        .dica { color: #f1c40f; font-weight: bold; margin: 10px 0; min-height: 24px; font-size: 18px; }
+        #tacaFinal { color: #f1c40f; font-size: 8px; display: none; margin: 20px 0; line-height: 1.1; }
+        .historico { font-size: 13px; color: #aaa; margin-top: 15px; border-top: 1px dotted #4834d4; padding-top: 10px; }
+        .alerta-desempate { color: #e94560; font-weight: bold; animation: blink 1s infinite; }
+        @keyframes blink { 50% { opacity: 0.4; } }
+    </style>
+</head>
+<body>
+
+    <div class="card">
+        <h2 id="msgTitulo">Torneio Estelar</h2>
+        
+        <div id="telaInicio">
+            <label>Quantos jogadores?</label>
+            <input type="number" id="qtdJogadores" value="2" min="1">
+            <label>Dificuldade:</label>
+            <select id="nivelDificuldade">
+                <option value="50">Fácil (0-50)</option>
+                <option value="100" selected>Médio (0-100)</option>
+                <option value="500">Difícil (0-500)</option>
+            </select>
+            <label>Tentativas por jogador:</label>
+            <input type="number" id="maxTentativas" value="5" min="1" max="10">
+            <button onclick="configurarTorneio()">INICIAR TORNEIO</button>
+        </div>
+
+        <div id="telaSetup" style="display: none;">
+            <p id="labelIdentificacao">Jogador <span id="numJogador">1</span>, seu nome:</p>
+            <input type="text" id="campoNome" placeholder="Nome do Jogador">
+            <button onclick="iniciarRodada()">COMEÇAR TURNO</button>
+        </div>
+
+        <div id="telaJogo" style="display: none;">
+            <p id="txtTentativa">Tentativa 1</p>
+            <input type="number" id="campoPalpite" placeholder="Seu chute...">
+            <button onclick="validarChute()">CHUTAR!</button>
+            <div id="boxDica" class="dica"></div>
+        </div>
+
+        <pre id="tacaFinal">
+       ___________
+      '._==_==_=_.'
+      .-\:      /-.
+     | (|:.     |) |
+      '-|:.     |-'
+        \::.    /
+         '::. .'
+           ) (
+         _.' '._
+        `-------`
+        </pre>
+
+        <div class="ranking">
+            <strong>✨ PLACAR DA RODADA:</strong>
+            <div id="exibirPlacar" style="margin-top:10px;">Aguardando...</div>
+            <div class="historico">
+                <strong>🏆 HALL DA FAMA (TOP 5):</strong>
+                <div id="rankingHistorico">Nenhum registro.</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- MOTOR DE ÁUDIO ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        function playSound(freq, type, duration, vol) {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = type;
+            osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+            gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + duration);
+        }
+
+        function somAcerto() { playSound(880, 'sine', 0.5, 0.1); setTimeout(()=>playSound(1109, 'sine', 0.5, 0.1), 100); }
+        function somErro() { playSound(150, 'sawtooth', 0.3, 0.05); }
+        function somFogos() {
+            for(let i=0; i<15; i++) {
+                setTimeout(() => {
+                    playSound(Math.random() * 200 + 50, 'triangle', 0.8, 0.1);
+                }, i * 300);
+            }
+        }
+
+        // --- LÓGICA DO JOGO ---
+        let lista = [];
+        let finalistas = [];
+        let vez = 0;
+        let segredo, tentativa = 1;
+        let totalJogadores, limiteSuperior, limiteTentativas;
+        let modoDesempate = false;
+
+        window.onload = atualizarRankingHistorico;
+
+        function configurarTorneio() {
+            totalJogadores = parseInt(document.getElementById("qtdJogadores").value);
+            limiteSuperior = parseInt(document.getElementById("nivelDificuldade").value);
+            limiteTentativas = parseInt(document.getElementById("maxTentativas").value);
+            document.getElementById("telaInicio").style.display = "none";
+            document.getElementById("telaSetup").style.display = "block";
+        }
+
+        function iniciarRodada() {
+            let n = document.getElementById("campoNome").value;
+            if (!n && !modoDesempate) { alert("Diga seu nome!"); return; }
+            if (!modoDesempate) lista.push({ nome: n, pontos: 0, estrelas: 0 });
+            
+            segredo = Math.floor(Math.random() * (limiteSuperior + 1));
+            tentativa = 1;
+            
+            document.getElementById("boxDica").innerText = "";
+            document.getElementById("campoPalpite").value = "";
+            document.getElementById("telaSetup").style.display = "none";
+            document.getElementById("telaJogo").style.display = "block";
+            
+            let nomeVez = modoDesempate ? finalistas[vez].nome : n;
+            document.getElementById("msgTitulo").innerHTML = modoDesempate ? 
+                `<span class="alerta-desempate">DESEMPATE: ${nomeVez}</span>` : `Vez de ${nomeVez}`;
+            
+            atualizarInterface();
+        }
+
+        function validarChute() {
+            let input = document.getElementById("campoPalpite");
+            let chute = Number(input.value);
+            if (input.value === "") return;
+
+            let jogadorAtual = modoDesempate ? finalistas[vez] : lista[vez];
+
+            if (chute === segredo) {
+                somAcerto();
+                confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 } });
+                
+                if (!modoDesempate) {
+                    let est = Math.ceil(((limiteTentativas - (tentativa - 1)) / limiteTentativas) * 5);
+                    jogadorAtual.estrelas = est;
+                    jogadorAtual.pontos = (est * 20);
+                    alert(`⭐ ACERTOU!`);
+                    proximoNormal();
+                } else {
+                    jogadorAtual.pontos += 1; 
+                    revelarCampeao();
+                }
+            } else {
+                somErro();
+                let d = chute < segredo ? "MAIOR" : "MENOR";
+                document.getElementById("boxDica").innerHTML = `Dica: O número é ${d} que ${chute}`;
+                
+                if (!modoDesempate) {
+                    if (tentativa >= limiteTentativas) {
+                        alert("❌ FIM! O número era " + segredo);
+                        proximoNormal();
+                    } else {
+                        tentativa++;
+                        atualizarInterface();
+                    }
+                } else {
+                    vez = (vez + 1) % finalistas.length;
+                    setTimeout(() => { alert(`Vez de ${finalistas[vez].nome}`); iniciarRodada(); }, 400);
+                }
+            }
+            input.value = "";
+        }
+
+        function proximoNormal() {
+            vez++;
+            desenharPlacar();
+            if (vez < totalJogadores) {
+                document.getElementById("telaSetup").style.display = "block";
+                document.getElementById("telaJogo").style.display = "none";
+                document.getElementById("campoNome").value = "";
+                document.getElementById("boxDica").innerText = "";
+            } else {
+                verificarEmpateOuFim();
+            }
+        }
+
+        function verificarEmpateOuFim() {
+            let maxPontos = Math.max(...lista.map(j => j.pontos));
+            let empatados = lista.filter(j => j.pontos === maxPontos);
+            if (empatados.length > 1 && maxPontos > 0) {
+                finalistas = empatados;
+                modoDesempate = true;
+                vez = 0;
+                segredo = Math.floor(Math.random() * (limiteSuperior + 1));
+                iniciarRodada();
+            } else {
+                revelarCampeao();
+            }
+        }
+
+        function revelarCampeao() {
+            let vencedor = lista.reduce((prev, curr) => (prev.pontos > curr.pontos) ? prev : curr);
+            document.getElementById("telaJogo").style.display = "none";
+            document.getElementById("tacaFinal").style.display = "block";
+            document.getElementById("msgTitulo").innerText = "🏆 CAMPEÃO: " + vencedor.nome;
+
+            somFogos();
+            let end = Date.now() + (4 * 1000);
+            (function frame() {
+                confetti({ particleCount: 7, angle: 60, spread: 55, origin: { x: 0 } });
+                confetti({ particleCount: 7, angle: 120, spread: 55, origin: { x: 1 } });
+                if (Date.now() < end) requestAnimationFrame(frame);
+            }());
+
+            salvarNoRanking(vencedor.nome, vencedor.pontos);
+            setTimeout(() => { location.reload(); }, 8000);
+        }
+
+        function salvarNoRanking(nome, pts) {
+            let historico = JSON.parse(localStorage.getItem("rankingEstelar") || "[]");
+            historico.push({ nome, pts });
+            historico.sort((a, b) => b.pts - a.pts);
+            localStorage.setItem("rankingEstelar", JSON.stringify(historico.slice(0, 5)));
+            atualizarRankingHistorico();
+        }
+
+        function atualizarRankingHistorico() {
+            let historico = JSON.parse(localStorage.getItem("rankingEstelar") || "[]");
+            let html = historico.map((h, i) => `<div>${i+1}º ${h.nome} - ${h.pts} pts</div>`).join("");
+            document.getElementById("rankingHistorico").innerHTML = html || "Nenhum registro.";
+        }
+
+        function desenharPlacar() {
+            let html = "";
+            for (let i = 0; i < lista.length; i++) {
+                let estHtml = '<span class="estrela">★</span>'.repeat(lista[i].estrelas) + '<span class="vazia">☆</span>'.repeat(5 - lista[i].estrelas);
+                html += `<div>${lista[i].nome}: ${estHtml} (${lista[i].pontos} pts)</div>`;
+            }
+            document.getElementById("exibirPlacar").innerHTML = html;
+        }
+
+        function atualizarInterface() {
+            let tTexto = modoDesempate ? "INFINITAS" : limiteTentativas;
+            document.getElementById("txtTentativa").innerText = `Tentativa ${tentativa} de ${tTexto}`;
+        }
+    </script>
+</body>
+</html>
